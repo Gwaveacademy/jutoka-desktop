@@ -27,7 +27,7 @@ module.exports = {
         authors: 'Jutoka',
         description: 'Professional rendering without browser limits',
         setupIcon: './assets/icon.ico',
-        iconUrl: 'https://jutoka.com/favicon.ico',
+        iconUrl: 'https://jutoka.online/favicon.ico',
       },
     },
     {
@@ -46,9 +46,9 @@ module.exports = {
     {
       name: '@electron-forge/publisher-github',
       config: {
-        repository: { owner: 'jutoka', name: 'jutoka-desktop' },
+        repository: { owner: 'Gwaveacademy', name: 'jutoka-desktop' },
         prerelease: false,
-        draft: true,
+        draft: false,
       },
     },
   ],
