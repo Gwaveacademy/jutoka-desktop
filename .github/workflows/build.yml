@@ -1,0 +1,108 @@
+name: Build & Release Jutoka Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Package for Windows
+        run: npx electron-forge make --platform=win32
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jutoka-desktop-windows
+          path: out/make/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Package for macOS
+        run: npx electron-forge make --platform=darwin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jutoka-desktop-macos
+          path: out/make/
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jutoka-desktop-windows
+          path: out/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: jutoka-desktop-macos
+          path: out/macos
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name || 'v1.0.0' }}
+          name: Jutoka Desktop ${{ github.ref_name || 'v1.0.0' }}
+          body: |
+            # Jutoka Desktop
+
+            Professional rendering without browser limits.
+
+            ## Downloads
+            - **Windows**: Download and run the `.exe` installer
+            - **macOS**: Download and open the `.dmg` file
+
+            ## Requirements
+            - Windows 10/11 64-bit or macOS 12+
+            - 8 GB RAM minimum (16 GB recommended for 4K)
+            - Internet connection for sign-in and project sync
+
+            ## Installation
+            1. Download the installer for your OS
+            2. Open the file and follow the prompts
+            3. Launch Jutoka Desktop and sign in
+            4. Click "Render on Desktop" in any web project
+          files: |
+            out/windows/**/*.exe
+            out/windows/**/*.msi
+            out/macos/**/*.dmg
+            out/macos/**/*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+*.exe
+*.dmg
+*.msi
+*.app
+.DS_Store
+.env
+*.log
