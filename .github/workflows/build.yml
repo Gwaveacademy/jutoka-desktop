@@ -42,7 +42,6 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
-      # --- arm64 build (native on Apple Silicon runner) ---
       - name: Package for macOS (Apple Silicon / arm64)
         run: npx electron-forge make --platform=darwin --arch=arm64
         env:
@@ -54,12 +53,6 @@ jobs:
           name: jutoka-desktop-macos-arm64
           path: out/make/
 
-      # --- x64 build (cross-compile on same runner) ---
-      # Keep arm64 node_modules so the DMG maker's macos-alias native module
-      # stays arm64 and can be loaded on the arm64 host.
-      # electron-packager will download the x64 Electron binary automatically.
-      # ffmpeg-static's binary will be arm64 but runs via Rosetta 2 on Intel
-      # (if installed) — the app opens and works either way.
       - name: Clean build output
         run: rm -rf out/make
 
@@ -100,6 +93,22 @@ jobs:
           name: jutoka-desktop-macos-x64
           path: out/macos-x64
 
+      - name: Rename artifacts for clarity
+        run: |
+          # Rename arm64 artifacts
+          cd out/macos-arm64
+          find . -name "*.dmg" -exec bash -c 'mv "$0" "$(dirname "$0")/Jutoka-arm64.dmg"' {} \;
+          find . -name "*.zip" -exec bash -c 'mv "$0" "$(dirname "$0")/Jutoka-arm64.zip"' {} \;
+          
+          # Rename x64 artifacts
+          cd ../macos-x64
+          find . -name "*.dmg" -exec bash -c 'mv "$0" "$(dirname "$0")/Jutoka-x64.dmg"' {} \;
+          find . -name "*.zip" -exec bash -c 'mv "$0" "$(dirname "$0")/Jutoka-x64.zip"' {} \;
+          
+          # List final files
+          echo "=== Final release files ==="
+          find ../ -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \) -exec ls -lh {} \;
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -112,8 +121,8 @@ jobs:
 
             ## Downloads
             - **Windows**: Download and run the `.exe` installer
-            - **macOS (Apple Silicon / M1/M2/M3/M4)**: Download the `arm64` `.dmg` file
-            - **macOS (Intel)**: Download the `x64` `.dmg` file
+            - **macOS (Apple Silicon / M1/M2/M3/M4)**: Download `Jutoka-arm64.dmg`
+            - **macOS (Intel)**: Download `Jutoka-x64.dmg`
 
             ## Requirements
             - Windows 10/11 64-bit or macOS 12+
@@ -136,15 +145,14 @@ jobs:
 
             ## Which macOS download do I need?
             - Click the Apple menu → **About This Mac**
-            - If it says **Apple M1/M2/M3/M4** → download the **arm64** version
-            - If it says **Intel** → download the **x64** version
+            - If it says **Apple M1/M2/M3/M4** → download `Jutoka-arm64.dmg`
+            - If it says **Intel** → download `Jutoka-x64.dmg`
           files: |
             out/windows/**/*.exe
-            out/windows/**/*.msi
-            out/macos-arm64/**/*.dmg
-            out/macos-arm64/**/*.zip
-            out/macos-x64/**/*.dmg
-            out/macos-x64/**/*.zip
+            out/macos-arm64/**/Jutoka-arm64.dmg
+            out/macos-arm64/**/Jutoka-arm64.zip
+            out/macos-x64/**/Jutoka-x64.dmg
+            out/macos-x64/**/Jutoka-x64.zip
           draft: false
           prerelease: false
         env:
