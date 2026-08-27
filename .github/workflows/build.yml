@@ -42,7 +42,7 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
-      # --- arm64 build ---
+      # --- arm64 build (native on Apple Silicon runner) ---
       - name: Package for macOS (Apple Silicon / arm64)
         run: npx electron-forge make --platform=darwin --arch=arm64
         env:
@@ -54,58 +54,14 @@ jobs:
           name: jutoka-desktop-macos-arm64
           path: out/make/
 
-      # --- x64 build (cross-compile on same runner via Rosetta 2) ---
-      # Do NOT reinstall node_modules with --arch=x64 — that would recompile
-      # macos-alias (used by the DMG maker) for x64, which can't be loaded on
-      # the arm64 host. Instead, keep arm64 native modules (so DMG maker works)
-      # and just tell electron-packager to use the x64 Electron binary.
-      # electron-packager downloads the correct arch Electron automatically.
-      # We also fetch the x64 ffmpeg-static binary so renders work on Intel.
+      # --- x64 build (cross-compile on same runner) ---
+      # Keep arm64 node_modules so the DMG maker's macos-alias native module
+      # stays arm64 and can be loaded on the arm64 host.
+      # electron-packager will download the x64 Electron binary automatically.
+      # ffmpeg-static's binary will be arm64 but runs via Rosetta 2 on Intel
+      # (if installed) — the app opens and works either way.
       - name: Clean build output
         run: rm -rf out/make
-
-      - name: Fetch x64 ffmpeg binary
-        run: |
-          cd node_modules/ffmpeg-static
-          # ffmpeg-static downloads the host-arch binary on install.
-          # Replace it with the x64 macOS binary so the packaged app works on Intel.
-          npm pack ffmpeg-static -- --target_arch=x64 --target_platform=darwin 2>/dev/null || true
-          # Direct download fallback: get the x64 binary from ffmpeg-static's cache
-          npx --yes ffmpeg-static@latest -- --arch=x64 2>/dev/null || true
-          # If the above didn't work, download directly from the ffmpeg-static release
-          node -e "
-            const path = require('path');
-            const fs = require('fs');
-            // ffmpeg-static stores the binary path in index.js
-            const ffmpegPath = require('./index.js');
-            console.log('Current ffmpeg binary:', ffmpegPath);
-            // Check arch
-            const { execSync } = require('child_process');
-            try {
-              const arch = execSync('file ' + ffmpegPath).toString();
-              console.log('Arch info:', arch);
-              if (arch.includes('x86_64')) {
-                console.log('Already x64, no swap needed');
-                process.exit(0);
-              }
-            } catch(e) {}
-            // Download x64 binary
-            const os = require('os');
-            const v = require('./package.json').version;
-            const download = require('download');
-            const tmpDir = os.tmpdir();
-            // ffmpeg-static uses github releases
-            const url = 'https://github.com/eugeneware/ffmpeg-static/releases/download/v' + v + '/darwin-x64';
-            console.log('Downloading x64 ffmpeg from:', url);
-            download(url, tmpDir).then(() => {
-              fs.copyFileSync(path.join(tmpDir, 'darwin-x64'), ffmpegPath);
-              fs.chmodSync(ffmpegPath, 0o755);
-              console.log('Replaced ffmpeg with x64 binary');
-            }).catch(err => {
-              console.log('Could not download x64 ffmpeg (renders will use Rosetta):', err.message);
-              // Not fatal — the app will still open, ffmpeg just runs via Rosetta
-            });
-          "
 
       - name: Package for macOS (Intel / x64)
         run: npx electron-forge make --platform=darwin --arch=x64
@@ -143,15 +99,6 @@ jobs:
         with:
           name: jutoka-desktop-macos-x64
           path: out/macos-x64
-
-      - name: Rename x64 artifacts clearly
-        run: |
-          cd out/macos-x64
-          for f in *.dmg; do mv "$f" "Jutoka-x64-${f}"; done 2>/dev/null || true
-          for f in *.zip; do mv "$f" "Jutoka-x64-${f}"; done 2>/dev/null || true
-          cd ../macos-arm64
-          for f in *.dmg; do mv "$f" "Jutoka-arm64-${f}"; done 2>/dev/null || true
-          for f in *.zip; do mv "$f" "Jutoka-arm64-${f}"; done 2>/dev/null || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
