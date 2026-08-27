@@ -1,7 +1,7 @@
 {
   "name": "jutoka-desktop",
-  "version": "1.0.0",
-  "description": "Jutoka Desktop — Professional rendering without browser limits",
+  "version": "1.0.1",
+  "description": "Jutoka Desktop \u2014 Professional rendering without browser limits",
   "main": "main.js",
   "author": "Jutoka",
   "license": "MIT",

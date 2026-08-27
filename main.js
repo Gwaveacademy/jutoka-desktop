@@ -1,7 +1,7 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const Store = require('electron-store');
-const { spawn } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 const ffprobePath = require('ffprobe-static').path;
@@ -14,6 +14,52 @@ let mainWindow = null;
 let tray = null;
 
 const JUTOKA_URL = 'https://jutoka.com';
+const APP_VERSION = app.getVersion();
+
+// --- Crash visibility -------------------------------------------------
+// Previously any uncaught error in the main process would kill the app
+// with zero feedback to the user ("I open it and nothing happens").
+// These handlers make sure a failure is always shown, not silent.
+function logToFile(label, err) {
+  try {
+    const logPath = path.join(app.getPath('userData'), 'crash.log');
+    const line = `[${new Date().toISOString()}] ${label}: ${err && err.stack ? err.stack : err}\n`;
+    fs.appendFileSync(logPath, line);
+  } catch (_) {
+    // best effort only
+  }
+}
+
+process.on('uncaughtException', (err) => {
+  logToFile('uncaughtException', err);
+  try {
+    dialog.showErrorBox(
+      'Jutoka Desktop ran into a problem',
+      `${err.message || err}\n\nA log was saved to:\n${path.join(app.getPath('userData'), 'crash.log')}`
+    );
+  } catch (_) {}
+});
+
+process.on('unhandledRejection', (err) => {
+  logToFile('unhandledRejection', err);
+});
+
+// --- Single instance ---------------------------------------------------
+// Without this, launching the app while it's already minimized to the
+// tray silently does nothing visible instead of surfacing the existing
+// window — exactly the "I open it and nothing happens" symptom.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -33,29 +79,69 @@ function createWindow() {
     show: false,
   });
 
-  // Load Jutoka web app
-  mainWindow.loadURL(JUTOKA_URL);
+  loadJutoka();
 
-  // Show window when ready
+  // Show window as soon as Electron has something to paint — this fires
+  // even for an error page, so the user always sees *something* rather
+  // than an app that appears to do nothing.
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
-  // Handle external links
+  // Safety net: if for any reason ready-to-show never fires (e.g. a
+  // renderer crash before first paint), force the window visible after
+  // a few seconds so it never just "does nothing".
+  const forceShowTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  }, 8000);
+  mainWindow.once('ready-to-show', () => clearTimeout(forceShowTimer));
+
+  // If the page fails to load (offline, DNS issue, cert issue, etc.)
+  // show a clear retry screen instead of a blank/confusing window.
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    if (errorCode === -3) return; // ERR_ABORTED — usually a benign redirect/navigation cancel
+    logToFile('did-fail-load', `${errorCode} ${errorDescription} (${validatedURL})`);
+    mainWindow.loadURL(
+      'data:text/html,' +
+        encodeURIComponent(`
+        <html><body style="font-family:-apple-system,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#fff;color:#111;">
+          <div style="text-align:center;max-width:420px;">
+            <h2 style="color:#F28546;">Couldn't reach Jutoka</h2>
+            <p>${errorDescription} (${errorCode})</p>
+            <p>Check your internet connection, then click retry.</p>
+            <button id="retry" style="background:#F28546;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:14px;cursor:pointer;">Retry</button>
+          </div>
+          <script>
+            document.getElementById('retry').onclick = () => location.reload();
+          </script>
+        </body></html>
+      `)
+    );
+  });
+
+  // Handle external links — open Jutoka links in-app, everything else
+  // (e.g. OAuth popups, support links) in the system browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.includes('jutoka.com')) {
       return { action: 'allow' };
     }
+    shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  // Inject desktop detection on page load
+  // Inject desktop detection on page load so the web app can offer
+  // "Render on Desktop" and call window.jutokaDesktop.* APIs.
   mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow.webContents.executeJavaScript(`
-      window.__JUTOKA_DESKTOP__ = true;
-      window.__JUTOKA_DESKTOP_VERSION__ = '1.0.0';
-      localStorage.setItem('jutoka_desktop', 'true');
-    `).catch(() => {});
+    mainWindow.webContents
+      .executeJavaScript(`
+        window.__JUTOKA_DESKTOP__ = true;
+        window.__JUTOKA_DESKTOP_VERSION__ = '${APP_VERSION}';
+        localStorage.setItem('jutoka_desktop', 'true');
+        window.dispatchEvent(new CustomEvent('jutoka-desktop-ready', { detail: { version: '${APP_VERSION}' } }));
+      `)
+      .catch((err) => logToFile('executeJavaScript', err));
   });
 
   mainWindow.on('close', (e) => {
@@ -66,28 +152,37 @@ function createWindow() {
   });
 }
 
-function createTray() {
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
-  let trayIcon;
-  try {
-    trayIcon = nativeImage.createFromPath(iconPath);
-  } catch {
-    trayIcon = nativeImage.createEmpty();
-  }
-  tray = new Tray(trayIcon);
-  
-  const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open Jutoka', click: () => mainWindow?.show() },
-    { type: 'separator' },
-    { label: 'Render Queue', click: () => mainWindow?.webContents.send('navigate', '/render-queue') },
-    { label: 'Settings', click: () => mainWindow?.webContents.send('navigate', '/desktop-settings') },
-    { type: 'separator' },
-    { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
-  ]);
+function loadJutoka() {
+  mainWindow.loadURL(JUTOKA_URL).catch((err) => logToFile('loadURL', err));
+}
 
-  tray.setToolTip('Jutoka Desktop');
-  tray.setContextMenu(contextMenu);
-  tray.on('click', () => mainWindow?.show());
+function createTray() {
+  try {
+    const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+    let trayIcon = nativeImage.createFromPath(iconPath);
+    if (trayIcon.isEmpty()) {
+      // Fall back to the main app icon rather than an empty image, which
+      // can throw on some platforms and silently abort tray creation.
+      trayIcon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
+    }
+    tray = new Tray(trayIcon);
+
+    const contextMenu = Menu.buildFromTemplate([
+      { label: 'Open Jutoka', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+      { type: 'separator' },
+      { label: 'Render Queue', click: () => mainWindow?.webContents.send('navigate', '/render-queue') },
+      { label: 'Settings', click: () => mainWindow?.webContents.send('navigate', '/desktop-settings') },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
+    ]);
+
+    tray.setToolTip('Jutoka Desktop');
+    tray.setContextMenu(contextMenu);
+    tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+  } catch (err) {
+    // Tray is a nice-to-have — never let a tray failure take down the app.
+    logToFile('createTray', err);
+  }
 }
 
 // IPC Handlers
@@ -131,7 +226,7 @@ ipcMain.handle('desktop:add-to-queue', (event, job) => {
 });
 ipcMain.handle('desktop:remove-from-queue', (event, jobId) => {
   let queue = store.get('renderQueue', []);
-  queue = queue.filter(j => j.id !== jobId);
+  queue = queue.filter((j) => j.id !== jobId);
   store.set('renderQueue', queue);
   return true;
 });
@@ -141,13 +236,15 @@ ipcMain.handle('desktop:clear-queue', () => {
 });
 
 // Settings
-ipcMain.handle('desktop:get-settings', () => store.get('settings', {
-  outputDir: path.join(app.getPath('videos'), 'Jutoka'),
-  quality: 'high',
-  hardwareAccel: true,
-  autoStartQueue: true,
-  notifications: true,
-}));
+ipcMain.handle('desktop:get-settings', () =>
+  store.get('settings', {
+    outputDir: path.join(app.getPath('videos'), 'Jutoka'),
+    quality: 'high',
+    hardwareAccel: true,
+    autoStartQueue: true,
+    notifications: true,
+  })
+);
 ipcMain.handle('desktop:set-settings', (event, settings) => {
   store.set('settings', settings);
   return true;
@@ -168,7 +265,7 @@ ipcMain.handle('desktop:clear-auth', () => {
 async function renderVideo(job) {
   const settings = store.get('settings', {});
   const outputDir = settings.outputDir || path.join(app.getPath('videos'), 'Jutoka');
-  require('fs').mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
 
   return new Promise((resolve, reject) => {
     const outputPath = path.join(outputDir, `${job.name || 'render'}_${Date.now()}.mp4`);
@@ -218,19 +315,21 @@ async function renderVideo(job) {
 }
 
 // App lifecycle
-app.whenReady().then(() => {
-  createWindow();
-  createTray();
+if (gotLock) {
+  app.whenReady().then(() => {
+    createWindow();
+    createTray();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
   });
-});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
 
-app.on('before-quit', () => {
-  app.isQuitting = true;
-});
+  app.on('before-quit', () => {
+    app.isQuitting = true;
+  });
+}

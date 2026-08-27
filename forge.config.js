@@ -3,7 +3,14 @@ module.exports = {
     name: 'Jutoka',
     executableName: 'Jutoka',
     icon: './assets/icon',
-    asar: true,
+    // ffmpeg-static / ffprobe-static ship real OS binaries that must be
+    // executed via child_process.spawn. A binary can't be executed while
+    // sealed inside app.asar, so it must be unpacked at build time —
+    // otherwise every render silently fails with ENOENT once packaged
+    // (this never shows up in `npm start`, only in the built installer).
+    asar: {
+      unpack: '**/node_modules/{ffmpeg-static,ffprobe-static}/**',
+    },
     extraResource: [],
     protocols: [
       { name: 'Jutoka Desktop', schemes: ['jutoka-desktop'] }
